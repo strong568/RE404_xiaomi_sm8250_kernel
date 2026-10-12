@@ -42,7 +42,7 @@ jobs:
         id: workspace
         run: |
           echo "start_time=$(date +\%s)" >> "$GITHUB_OUTPUT"
-          echo "kernelsu=${{ inputs.ENABLE_KERNELSU && 'Yes' \vert{}\vert{} 'No' }}" >> "$GITHUB_OUTPUT"
+          echo "kernelsu=${{ inputs.ENABLE_KERNELSU && 'Yes' || 'No' }}" >> "$GITHUB_OUTPUT"
 
       - name: Clone Kernel Source
         id: kernel
@@ -143,7 +143,7 @@ jobs:
 
               SIGN_FILES=$(find "$KSU_DIR" -type f \( -name "apk_sign.c" -o -name "apk_sign.h" -o -name "manager.c" -o -name "manager.h" \))
               if [ -n "$SIGN_FILES" ]; then
-                KSU_SIZE=$(grep -E 'EXPECTED_SIZE\vert{}EXPECTED_SIGN_SIZE'$SIGN_FILES 2>/dev/null \
+                KSU_SIZE=$(grep -E 'EXPECTED_SIZE|EXPECTED_SIGN_SIZE'$SIGN_FILES 2>/dev/null \
                   | awk -F'=' '{print $2}' | tr -d ';\r\n ' | sed 's/0x/ 0x/g' | xargs || echo "")
                 KSU_HASH=$(grep -oE '[0-9a-fA-F]{64}'$SIGN_FILES 2>/dev/null | sort -u | tr '\n' ' ' || echo "")
               fi
@@ -166,7 +166,7 @@ jobs:
           echo "ksu_hash=${KSU_HASH}" >> "$GITHUB_OUTPUT"
 
           # Tính thời gian chạy
-          echo "elapsed_time=$(echo "$(date +%s) - ${{ steps.workspace.outputs.start_time }}" \vert{} bc)" >> "$GITHUB_OUTPUT"
+          echo "elapsed_time=$(echo "$(date +%s) - ${{ steps.workspace.outputs.start_time }}" | bc)" >> "$GITHUB_OUTPUT"
 
           # Xác định thông tin Manager tương thích
           KSU_CHOICE="${{ inputs.WHICH_KSU }}"
