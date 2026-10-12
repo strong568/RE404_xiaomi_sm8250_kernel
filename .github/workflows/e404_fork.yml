@@ -28,7 +28,7 @@ on:
           - "KOWX712-KernelSU"
         default: "backslashxx-KernelSU"
       enable_susfs:
-        description: "Cấu hình CONFIG_KSU_SUSFS (nếu fork hỗ trợ)"
+        description: "Cấu hình CONFIG_KSU_SUSFS (Bật đầy đủ cờ ẩn Root)"
         required: true
         type: boolean
         default: true
@@ -67,6 +67,7 @@ jobs:
             git \
             libssl-dev \
             lld \
+            llvm \
             python3 \
             zstd \
             gcc-aarch64-linux-gnu \
@@ -76,12 +77,13 @@ jobs:
 
       - name: Download Neutron Clang
         run: |
-          wget -O clang.tar.zst \
-            https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst
           mkdir -p clang
+          wget -qO clang.tar.zst https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst
           tar --zstd -xf clang.tar.zst -C clang
-          CLANG_DIR=$(find$GITHUB_WORKSPACE/clang -type d -name bin | head -1)
-          echo "$CLANG_DIR" >> $GITHUB_PATH
+          
+          CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -type f -name 'clang' -exec dirname {} \; | head -n 1)"
+          echo "Found Clang binary at: $CLANG_BIN"
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
 
       - name: Adding KernelSU
         if: inputs.ENABLE_KERNELSU
@@ -164,11 +166,8 @@ jobs:
           echo "ksu_tag=${KSU_TAG}" >> "$GITHUB_OUTPUT"
           echo "ksu_size=${KSU_SIZE}" >> "$GITHUB_OUTPUT"
           echo "ksu_hash=${KSU_HASH}" >> "$GITHUB_OUTPUT"
-
-          # Tính thời gian chạy
           echo "elapsed_time=$(echo "$(date +%s) - ${{ steps.workspace.outputs.start_time }}" | bc)" >> "$GITHUB_OUTPUT"
 
-          # Xác định thông tin Manager tương thích
           KSU_CHOICE="${{ inputs.WHICH_KSU }}"
           if [ "${{ steps.workspace.outputs.kernelsu }}" = "Yes" ]; then
             case "$KSU_CHOICE" in
@@ -221,14 +220,28 @@ jobs:
           make O=out vendor/munch_defconfig
 
           if [ "${{ inputs.ENABLE_KERNELSU }}" = "true" ] && [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            echo "CONFIG_KSU_SUSFS=y" >> out/.config
-            echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> out/.config
+            echo "=== Kích hoạt toàn bộ các cờ bảo vệ SuSFS ==="
+            for cfg in \
+              CONFIG_KSU_SUSFS \
+              CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
+              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_PATH \
+              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_MOUNT \
+              CONFIG_KSU_SUSFS_SUS_KSTAT \
+              CONFIG_KSU_SUSFS_SUS_MOUNT \
+              CONFIG_KSU_SUSFS_SPOOF_UNAME; do
+              scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
+            done
           fi
 
           make -j$(nproc) \
             O=out \
             CC=clang \
-            LLVM=1 \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             LLVM_IAS=1 \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -274,6 +287,7 @@ jobs:
             - **Thiết bị:** POCO F4 (Munch / SM8250)
             - **Nhánh:** `${{ github.event.inputs.kernel_branch }}`
             - **KSU Variant:** `${{ inputs.ENABLE_KERNELSU && inputs.WHICH_KSU || 'Disabled' }}`
+            - **SuSFS Support:** `${{ inputs.enable_susfs && 'Full Config Enabled' || 'Disabled' }}`
             - **KSU Version Count:** `${{ steps.ksu_meta.outputs.ksu_ver }}`
             - **KSU Tag / Git Ref:** `${{ steps.ksu_meta.outputs.ksu_tag }}`
             - **Thời gian build:** `${{ steps.ksu_meta.outputs.elapsed_time }}s`
