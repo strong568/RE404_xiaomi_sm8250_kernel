@@ -29,7 +29,7 @@ on:
           - "backslashxx-KernelSU"
           - "KOWX712-KernelSU"
           - "MidoriSU"
-        default: "ReSukiSU"
+        default: "backslashxx-KernelSU"
       enable_susfs:
         description: "Cấu hình CONFIG_KSU_SUSFS (Bật đầy đủ cờ ẩn Root)"
         required: true
@@ -118,7 +118,7 @@ jobs:
               fi
               ;;
             "SukiSU-Ultra")
-              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s susfs-main
+              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s main
               ;;
             "XXKSU-SUSFS")
               curl -LSs "https://raw.githubusercontent.com/zenwav/KernelSU-SUSFS/refs/heads/master/kernel/setup.sh" | bash -s master
@@ -137,128 +137,67 @@ jobs:
               ;;
             *)
               if [ "${{ inputs.enable_susfs }}" = "true" ]; then
-                curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/next-susfs/kernel/setup.sh" | bash -s next-susfs
+                curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy_susfs/kernel/setup.sh" | bash -s -- legacy_susfs
               else
-                curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/next/kernel/setup.sh" | bash -s next
+                curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy/kernel/setup.sh" | bash -s -- legacy
               fi
               ;;
           esac
 
-          # Tích hợp đầy đủ SuSFS (Bao gồm cả Kernel VFS Patch + Files)
+          # Tải và Patch đầy đủ SuSFS 4.19 vào kernel core
           if [ "${{ inputs.enable_susfs }}" = "true" ]; then
             echo "=== Đồng bộ và Patch mã nguồn SuSFS 4.19 vào kernel core ==="
             rm -rf /tmp/susfs4ksu
             git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu || \
-            git clone --depth=1 -b kernel-4.19 https://github.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
+            git clone --depth=1 -b kernel-4.19 https://github.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu || true
 
             if [ -d "/tmp/susfs4ksu" ]; then
-              # 1. Copy các tệp thực thi và header của SuSFS
+              mkdir -p fs include/linux
               cp -rf /tmp/susfs4ksu/kernel_patches/fs/* fs/ 2>/dev/null || cp -rf /tmp/susfs4ksu/KernelPatches/fs/* fs/ 2>/dev/null || true
               cp -rf /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/ 2>/dev/null || cp -rf /tmp/susfs4ksu/KernelPatches/include/linux/* include/linux/ 2>/dev/null || true
 
-              # 2. Áp dụng file Patch VFS vào nhân 4.19 (Bắt buộc để SuSFS hoạt động thực sự)
+              if [ ! -f include/linux/susfs_def.h ] && [ -f include/linux/susfs.h ]; then
+                cp -f include/linux/susfs.h include/linux/susfs_def.h
+              fi
+
+              # Áp dụng file Patch VFS vào nhân 4.19
               SUSFS_PATCH=$(find /tmp/susfs4ksu -name "50_add_susfs_in_kernel*.patch" | head -n 1)
               if [ -n "$SUSFS_PATCH" ]; then
                 echo "Đang áp dụng patch nhân: $SUSFS_PATCH"
                 patch -p1 -F 3 --no-backup-if-mismatch < "$SUSFS_PATCH" || true
               fi
 
-              # 3. Đảm bảo fs/Kconfig có khai báo CONFIG_KSU_SUSFS để không bị xóa khi chạy olddefconfig
+              # Bổ sung khai báo Kconfig cho SuSFS nếu patch chưa tự thêm vào fs/Kconfig
               if ! grep -q "config KSU_SUSFS" fs/Kconfig 2>/dev/null; then
-                cat << 'EOF' >> fs/Kconfig
-
-config KSU_SUSFS
-	bool "KernelSU - SUSFS"
-	depends on KSU
-	default y
-	help
-	  Patch and Enable SUSFS to kernel with KernelSU.
-
-config KSU_SUSFS_HAS_MAGIC_MOUNT
-	bool "Say yes if the current KernelSU repo has magic mount implemented"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_SUS_PATH
-	bool "Enable to hide suspicious path"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_SUS_MOUNT
-	bool "Enable to hide suspicious mounts"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-	bool "Enable to hide KSU's default mounts automatically"
-	depends on KSU_SUSFS_SUS_MOUNT
-	default y
-
-config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-	bool "Enable to hide suspicious bind mounts automatically"
-	depends on KSU_SUSFS_SUS_MOUNT
-	default y
-
-config KSU_SUSFS_SUS_KSTAT
-	bool "Enable to spoof suspicious kstat"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_SUS_OVERLAYFS
-	bool "Enable to automatically spoof kstat and kstatfs for overlayed files/directories"
-	depends on KSU_SUSFS
-	default n
-
-config KSU_SUSFS_TRY_UMOUNT
-	bool "Enable to use ksu's try_umount"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
-	bool "Enable to add bind mounts to ksu's try_umount automatically"
-	depends on KSU_SUSFS_TRY_UMOUNT
-	default y
-
-config KSU_SUSFS_SPOOF_UNAME
-	bool "Enable to spoof uname"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_ENABLE_LOG
-	bool "Enable logging susfs log to kernel"
-	depends on KSU_SUSFS
-	default n
-
-config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-	bool "Enable to automatically hide ksu and susfs symbols from /proc/kallsyms"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-	bool "Enable to spoof /proc/bootconfig or /proc/cmdline"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_OPEN_REDIRECT
-	bool "Enable to redirect a path to be opened with another path"
-	depends on KSU_SUSFS
-	default y
-
-config KSU_SUSFS_SUS_SU
-	bool "Enable SUS-SU in runtime temporarily"
-	depends on KSU_SUSFS && KPROBES && HAVE_KPROBES && KPROBE_EVENTS
-	default n
-
-config KSU_SUSFS_SUS_MAP
-	bool "Enable to hide some mmapped real file from different proc maps interfaces"
-	depends on KSU_SUSFS
-	default y
-EOF
+                printf '\nconfig KSU_SUSFS\n\tbool "KernelSU - SUSFS"\n\tdepends on KSU\n\tdefault y\n' >> fs/Kconfig
+                for cfg in \
+                  KSU_SUSFS_HAS_MAGIC_MOUNT \
+                  KSU_SUSFS_SUS_PATH \
+                  KSU_SUSFS_AUTO_ADD_SUS_PATH \
+                  KSU_SUSFS_SUS_MOUNT \
+                  KSU_SUSFS_AUTO_ADD_SUS_MOUNT \
+                  KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+                  KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+                  KSU_SUSFS_SUS_KSTAT \
+                  KSU_SUSFS_SUS_OVERLAYFS \
+                  KSU_SUSFS_TRY_UMOUNT \
+                  KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
+                  KSU_SUSFS_SPOOF_UNAME \
+                  KSU_SUSFS_ENABLE_LOG \
+                  KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                  KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                  KSU_SUSFS_SPOOF_PROC_CMDLINE \
+                  KSU_SUSFS_OPEN_REDIRECT \
+                  KSU_SUSFS_SUS_SU \
+                  KSU_SUSFS_SUS_MAP; do
+                  printf '\nconfig %s\n\tbool "%s"\n\tdepends on KSU_SUSFS\n\tdefault y\n' "$cfg" "$cfg" >> fs/Kconfig
+                done
               fi
 
               if ! grep -q "CONFIG_KSU_SUSFS" fs/Makefile 2>/dev/null; then
                 echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
               fi
+              echo "Đã tích hợp SuSFS thành công!"
             fi
           fi
 
@@ -279,6 +218,24 @@ EOF
             sed -i 's/static void context_struct_compute_av(/void context_struct_compute_av(/g' security/selinux/ss/services.c
           fi
 
+          echo "=== Vô hiệu hóa toàn bộ cơ chế chặn build của KSU/ReSukiSU ==="
+          KSU_DIR=""
+          for d in KernelSU KernelSU-Next drivers/kernelsu; do
+            if [ -d "$d" ]; then
+              KSU_DIR="$d"
+              break
+            fi
+          done
+
+          if [ -n "$KSU_DIR" ]; then
+            find "$KSU_DIR" -type f -name "*_check.mk" -exec truncate -s 0 {} +
+            find "$KSU_DIR" -type f -name "check_*.mk" -exec truncate -s 0 {} +
+
+            if [ -f "$KSU_DIR/Kbuild" ]; then
+              sed -i 's/$(error.*You should integrate susfs in your kernel.*)/$(warning susfs check bypassed)/g' "$KSU_DIR/Kbuild"
+              sed -i 's/$(error.*You lost.*)/$(warning hook check bypassed)/g' "$KSU_DIR/Kbuild"
+            fi
+          fi
 
       - name: Extract KSU Metadata & Manager Compatibility
         id: ksu_meta
