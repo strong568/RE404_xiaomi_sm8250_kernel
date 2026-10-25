@@ -252,12 +252,18 @@ jobs:
           make O=out vendor/munch_defconfig
 
           if [ "${{ inputs.ENABLE_KERNELSU }}" = "true" ]; then
-            echo "=== Kích hoạt KernelSU Core ==="
+            echo "=== Kích hoạt KernelSU Core & Hỗ trợ SELinux Hide (selinux_hide) ==="
             scripts/config --file out/.config --enable CONFIG_KSU
             scripts/config --file out/.config --enable CONFIG_KPROBES
             scripts/config --file out/.config --enable CONFIG_HAVE_KPROBES
             scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
+            
+            # Bắt buộc để selinux_hide tìm được symbol hook SELinux (policydb / lsm_hook)
+            scripts/config --file out/.config --enable CONFIG_KALLSYMS
+            scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
+            scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX
           fi
+
 
           if [ "${{ inputs.ENABLE_KERNELSU }}" = "true" ] && [ "${{ inputs.enable_susfs }}" = "true" ]; then
             echo "=== Kích hoạt toàn bộ các cờ bảo vệ SuSFS (Anti-Detect Bank/VNeID) ==="
