@@ -1,0 +1,222 @@
+name: Build Perf+ (dev)
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_TREE:
+        description: 'Kernel Tree'
+        default: 'https://github.com/rohmanurip/perf_kernel'
+        required: true
+      KERNEL_BRANCH:
+        description: 'Kernel Branch'
+        default: 'bpf-rksu-5.10'
+        required: true
+      VERSION:
+        description: 'Kernel Version'
+        default: '1.3.1'
+        required: true
+      CLANG_TOOLCHAIN:
+        description: 'Clang toolchain selection'
+        default: 'aosp clang 22'
+        required: true
+        type: choice
+        options:
+          - neutron
+          - aosp clang 20
+          - aosp clang 22
+      USE_LTO_THIN:
+        description: 'Use LTO THIN instead of FULL'
+        default: 'false'
+        required: false
+        type: boolean
+      KERNEL_PATCH:
+        description: 'Apply Kernel Patch'
+        default: 'true'
+        required: false
+        type: boolean
+      ANYKERNEL_URL:
+        description: 'AnyKernel Url'
+        default: 'https://github.com/rohmanurip/AnyKernel3'
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      KERNEL_TREE: ${{ github.event.inputs.KERNEL_TREE }}
+      KERNEL_BRANCH: ${{ github.event.inputs.KERNEL_BRANCH }}
+    
+    steps:
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex libncurses6 g++-multilib gcc-multilib git gnupg gperf imagemagick lib32readline-dev lib32z1-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3
+          sudo apt-get install clang lld llvm
+          
+      - name: Cache Clang Toolchain
+        id: cache-clang
+        uses: actions/cache@v5
+        with:
+          path: |
+            clang-neutron
+            clang-aosp-20
+            clang-aosp-22
+          key: clang-toolchain-${{ github.event.inputs.CLANG_TOOLCHAIN }}-${{ hashFiles('**/clang-version') }}
+          restore-keys: |
+            clang-toolchain-${{ github.event.inputs.CLANG_TOOLCHAIN }}-
+
+      - name: Download & Extract Clang (If not cached)
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          if [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 20" ]]; then
+            wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang.tar.gz
+            mkdir -p clang-aosp-20
+            tar -xf clang.tar.gz -C clang-aosp-20
+            echo "aosp-20-r547379" > clang-version
+          elif [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 22" ]]; then
+            wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/9b144befdfd93b90e02c663504fb9f4b95f9faf8/clang-r596125.tar.gz -O clang.tar.gz
+            mkdir -p clang-aosp-22
+            tar -xf clang.tar.gz -C clang-aosp-22
+            echo "aosp-21-r596125" > clang-version
+          else
+            wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst -O clang.tar.zst
+            mkdir -p clang-neutron
+            unzstd -d clang.tar.zst
+            tar -xf clang.tar -C clang-neutron
+            echo "neutron-10032024" > clang-version
+          fi
+      - name: Set Clang Path
+        run: |
+          if [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 20" ]]; then
+            echo "CLANG_PATH=$(pwd)/clang-aosp-20/bin" >> $GITHUB_ENV
+          elif [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 22" ]]; then
+            echo "CLANG_PATH=$(pwd)/clang-aosp-22/bin" >> $GITHUB_ENV
+          else
+            echo "CLANG_PATH=$(pwd)/clang-neutron/bin" >> $GITHUB_ENV
+          fi
+
+      - name: Checkout Kernel & Initialize Workspace
+        run: |
+          echo "tools_folder=$(pwd)" >> $GITHUB_OUTPUT
+          git clone --depth=1 --branch "${{ env.KERNEL_BRANCH }}" "${{ env.KERNEL_TREE }}" kernel_tree
+          echo "kernel_folder=$(pwd)/kernel_tree" >> $GITHUB_OUTPUT
+        id: workspace
+
+      - name: Apply Patches (SuSFS/Next/RKSU)
+        if: ${{ github.event.inputs.KERNEL_PATCH == 'true' }}
+        run: |
+          cd kernel_tree
+          bash nextpatch.sh
+
+      - name: Change LTO Configuration to THIN
+        if: ${{ github.event.inputs.USE_LTO_THIN == 'true' }}
+        run: |
+          cd kernel_tree
+          echo "Changing LTO configuration from FULL to THIN..."
+          sed -i -e '
+          /CONFIG_ARCH_SUPPORTS_LTO_CLANG_THIN=y/c\CONFIG_ARCH_SUPPORTS_LTO_CLANG_THIN=y
+          /CONFIG_HAS_LTO_CLANG=y/c\CONFIG_HAS_LTO_CLANG=y
+          /# CONFIG_LTO_NONE is not set/c\# CONFIG_LTO_NONE is not set
+          /CONFIG_LTO_CLANG_FULL=y/c\# CONFIG_LTO_CLANG_FULL is not set
+          /# CONFIG_LTO_CLANG_THIN is not set/c\CONFIG_LTO_CLANG_THIN=y
+          ' arch/arm64/configs/vendor/munch_defconfig
+
+      - name: Build Kernel
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER="rohmanurip"
+          export KBUILD_BUILD_HOST="Github"
+          export KBUILD_BUILD_TIMESTAMP="$(TZ=Asia/Jakarta LC_TIME=C date)"
+
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export LLVM=1
+          export LLVM_IAS=1
+          
+          make O=out vendor/munch_defconfig
+          make O=out CC=clang -j$(nproc --all) \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            LLVM=1 LLVM_IAS=1 \
+            LD=ld.lld NM=llvm-nm AR=llvm-ar OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
+        working-directory: ${{ steps.workspace.outputs.kernel_folder }}
+
+      - name: "Upload Image"
+        uses: actions/upload-artifact@v7
+        with:
+          name: Image
+          path: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/Image
+      - name: "Upload Image.gz"
+        uses: actions/upload-artifact@v7
+        with:
+          name: Image.gz
+          path: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/Image.gz
+      - name: "Upload dtb"
+        uses: actions/upload-artifact@v7
+        with:
+          name: dtb
+          path: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/dtb.img
+      - name: "Upload dtbo.img (AOSP)"
+        uses: actions/upload-artifact@v7
+        with:
+          name: dtbo.img
+          path: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/dtbo.img
+
+      - name: Check Artifacts
+        run: |
+          cd kernel_tree
+          echo "Checking build artifacts..."
+          ls -R out/arch/arm64/boot
+
+      - name: Define ZIP Name
+        run: |
+          export TZ='Asia/Jakarta'
+          COMPILED_DATE=$(date +%Y%m%d)
+          BRANCH_NAME="${{ env.KERNEL_BRANCH }}"
+          VERSION="${{ github.event.inputs.VERSION }}"
+          echo "ZIP_NAME=[Perf+-${BRANCH_NAME}]-${VERSION}-${COMPILED_DATE}" >> $GITHUB_ENV
+          
+      - name: AnyKernel3
+        run: |
+          git clone --recursive --depth=1 ${{ github.event.inputs.ANYKERNEL_URL }} AnyKernel3
+          if [ -e "Image" ]; then
+            cp -f Image AnyKernel3
+          fi
+          if [ -e "dtb.img" ]; then
+            cp -f dtb.img AnyKernel3/dtb
+          fi
+          if [ -e "dtbo.img" ]; then
+            cp -f dtbo.img AnyKernel3
+          fi
+          
+          # Move DTBs
+          mkdir -p AnyKernel3/dtbs
+          find dts/vendor -name "*.dtb" -exec cp {} AnyKernel3/dtbs/ \; 2>/dev/null || echo "⚠️ No DTBs found"
+          
+          cd AnyKernel3
+          zip -q -r "${{ env.ZIP_NAME }}.zip" *
+          mv "${{ env.ZIP_NAME }}.zip" ../
+        working-directory: ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/
+      
+      - name: "Upload AnyKernel"
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: |
+            ${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/AnyKernel3/
+            !${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/AnyKernel3/.git
+            !${{ steps.workspace.outputs.kernel_folder }}/out/arch/arm64/boot/AnyKernel3/.github
+
+ # Ensure
+      - name: Download all ZIP artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
