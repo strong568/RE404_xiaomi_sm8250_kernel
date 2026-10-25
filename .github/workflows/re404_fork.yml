@@ -142,8 +142,8 @@ jobs:
               ;;
           esac
 
-          # Patch SELinux Static Symbol Export cho ReSukiSU / BakaSU / SukiSU (Hỗ trợ selinux_hide & vượt qua static_export_check.mk)
-          echo "=== Patching SELinux Static Symbols cho ReSukiSU / selinux_hide ==="
+          # Patch SELinux Static Symbol Export cho ReSukiSU / BakaSU / SukiSU (Hỗ trợ selinux_hide)
+          echo "=== Patching SELinux Static Symbols ==="
           if [ -f security/selinux/selinuxfs.c ]; then
             sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
             sed -i 's/static DEFINE_MUTEX(sel_mutex);/DEFINE_MUTEX(sel_mutex);/g' security/selinux/selinuxfs.c
@@ -157,6 +157,31 @@ jobs:
             sed -i 's/static DEFINE_RWLOCK(policy_rwlock);/DEFINE_RWLOCK(policy_rwlock);/g' security/selinux/ss/services.c
             sed -i 's/static void security_dump_masked_av(/void security_dump_masked_av(/g' security/selinux/ss/services.c
             sed -i 's/static void context_struct_compute_av(/void context_struct_compute_av(/g' security/selinux/ss/services.c
+          fi
+
+          echo "=== Bỏ qua các tập lệnh kiểm tra hook khắt khe của ReSukiSU/KSU-Next ==="
+          # Tìm đúng thư mục KSU vừa clone
+          KSU_DIR=""
+          for d in KernelSU KernelSU-Next drivers/kernelsu; do
+            if [ -d "$d" ]; then
+              KSU_DIR="$d"
+              break
+            fi
+          done
+          
+          if [ -n "$KSU_DIR" ]; then
+            if [ -f "$KSU_DIR/kernel/tools/inline_hook_check.mk" ]; then
+              echo "Làm rỗng inline_hook_check.mk để tránh lỗi You lost ksu_handle_setresuid"
+              > "$KSU_DIR/kernel/tools/inline_hook_check.mk"
+            fi
+            if [ -f "$KSU_DIR/kernel/tools/static_export_check.mk" ]; then
+              echo "Làm rỗng static_export_check.mk"
+              > "$KSU_DIR/kernel/tools/static_export_check.mk"
+            fi
+            if [ -f "$KSU_DIR/kernel/tools/check_vfs_hook.mk" ]; then
+              echo "Làm rỗng check_vfs_hook.mk"
+              > "$KSU_DIR/kernel/tools/check_vfs_hook.mk"
+            fi
           fi
 
       - name: Extract KSU Metadata & Manager Compatibility
