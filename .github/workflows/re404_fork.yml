@@ -139,18 +139,28 @@ jobs:
               ;;
           esac
 
-          # Tự động nạp mã nguồn nhân SuSFS nếu kernel chưa có
+          # Tải mã nguồn SuSFS chuẩn bằng git clone (tránh lỗi curl trả về trang web HTML)
           if [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            echo "=== Đồng bộ tệp nhân SuSFS vào kernel core ==="
-            mkdir -p fs include/linux
-            if [ ! -f fs/susfs.c ]; then
-              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/KernelPatches/fs/susfs.c" -o fs/susfs.c || true
-            fi
-            if [ ! -f include/linux/susfs.h ]; then
-              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/KernelPatches/include/linux/susfs.h" -o include/linux/susfs.h || true
-            fi
-            if ! grep -q "CONFIG_KSU_SUSFS" fs/Makefile 2>/dev/null; then
-              echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
+            echo "=== Đồng bộ tệp nhân SuSFS 4.19 vào kernel core ==="
+            rm -rf /tmp/susfs4ksu
+            git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu || \
+            git clone --depth=1 -b kernel-4.19 https://github.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu || true
+
+            if [ -d "/tmp/susfs4ksu" ]; then
+              mkdir -p fs include/linux
+              cp -f /tmp/susfs4ksu/KernelPatches/fs/susfs.c fs/ 2>/dev/null || true
+              cp -f /tmp/susfs4ksu/KernelPatches/include/linux/susfs.h include/linux/ 2>/dev/null || true
+              cp -f /tmp/susfs4ksu/KernelPatches/include/linux/susfs_def.h include/linux/ 2>/dev/null || true
+              
+              # Nếu tệp include/linux/susfs_def.h vẫn chưa có từ repo gốc, tạo tệp header fallback tương thích
+              if [ ! -f include/linux/susfs_def.h ] && [ -f include/linux/susfs.h ]; then
+                cp -f include/linux/susfs.h include/linux/susfs_def.h
+              fi
+
+              if ! grep -q "CONFIG_KSU_SUSFS" fs/Makefile 2>/dev/null; then
+                echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
+              fi
+              echo "Đã sao chép susfs.c, susfs.h, susfs_def.h thành công!"
             fi
           fi
 
@@ -191,6 +201,7 @@ jobs:
               sed -i 's/$(error.*You lost.*)/$(warning hook check bypassed)/g' "$KSU_DIR/Kbuild"
             fi
           fi
+
 
 
       - name: Extract KSU Metadata & Manager Compatibility
