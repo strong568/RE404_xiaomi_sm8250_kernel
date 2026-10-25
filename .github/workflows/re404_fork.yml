@@ -80,12 +80,18 @@ jobs:
       - name: Download Neutron Clang
         run: |
           mkdir -p clang
-          wget -qO clang.tar.zst https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst
-          tar --zstd -xf clang.tar.zst -C clang
-          
-          CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" -type f -name 'clang' -exec dirname {} \; | head -n 1)"
-          echo "Found Clang binary at: $CLANG_BIN"
-          echo "$CLANG_BIN" >> "$GITHUB_PATH"
+          wget -qO clang.tar.zst https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/06092026/neutron-clang-06092026.tar.zst || true
+          if [ -s clang.tar.zst ]; then
+            tar --zstd -xf clang.tar.zst -C clang
+          fi
+
+          CLANG_BIN="$(find "$GITHUB_WORKSPACE/clang" \( -type f -o -type l \) -name 'clang' -exec dirname {} \; | head -n 1)"
+          if [ -n "$CLANG_BIN" ]; then
+            echo "Found Clang binary at: $CLANG_BIN"
+            echo "$CLANG_BIN" >> "$GITHUB_PATH"
+          else
+            echo "Using system Clang: $(which clang)"
+          fi
 
       - name: Adding KernelSU
         if: inputs.ENABLE_KERNELSU
@@ -94,16 +100,18 @@ jobs:
           KSU_CHOICE="${{ inputs.WHICH_KSU }}"
           echo "Setting up KernelSU fork: ${KSU_CHOICE}"
 
+          # Dọn dẹp submodule KernelSU có sẵn trong source để tránh cảnh báo
+          git submodule deinit -f KernelSU 2>/dev/null || true
+          git rm -rf KernelSU 2>/dev/null || rm -rf KernelSU .git/modules/KernelSU
+
           case "$KSU_CHOICE" in
             "ReSukiSU")
               # Pin ReSukiSU to v4.2.0-rc3: main tip hard-blocks SuSFS builds
               # ("Please wait susfs update") until simonpunk updates SuSFS side
-              [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s -- --cleanup || true
               curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s v4.2.0-rc3
               ;;
             "BakaSU")
               # Pin BakaSU to v4.2.0-rc3 when SuSFS is enabled because main tip hard-blocks SuSFS builds
-              [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/refs/heads/main/kernel/setup.sh" | bash -s -- --cleanup || true
               if [ "${{ inputs.enable_susfs }}" = "true" ]; then
                 curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/refs/heads/main/kernel/setup.sh" | bash -s v4.2.0-rc3
               else
@@ -111,27 +119,21 @@ jobs:
               fi
               ;;
             "SukiSU-Ultra")
-              [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s -- --cleanup || true
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s main
               ;;
             "XXKSU-SUSFS")
-              [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/zenwav/KernelSU-SUSFS/refs/heads/master/kernel/setup.sh" | bash -s -- --cleanup || true
               curl -LSs "https://raw.githubusercontent.com/zenwav/KernelSU-SUSFS/refs/heads/master/kernel/setup.sh" | bash -s master
               ;;
             "RKSU (rsuntk)")
-              [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s -- --cleanup || true
               curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s v3.2.2-10-legacy
               ;;
             "backslashxx-KernelSU")
-              [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s -- --cleanup || true
               curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
               ;;
             "KOWX712-KernelSU")
-              [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s -- --cleanup || true
               curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
               ;;
             *)
-              [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy/kernel/setup.sh" | bash -s -- --cleanup || true
               if [ "${{ inputs.enable_susfs }}" = "true" ]; then
                 curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy_susfs/kernel/setup.sh" | bash -s -- legacy_susfs
               else
@@ -139,6 +141,18 @@ jobs:
               fi
               ;;
           esac
+
+          # Patch SELinux Static Symbol Export cho ReSukiSU / BakaSU / SukiSU (Hỗ trợ selinux_hide & vượt qua static_export_check.mk)
+          echo "=== Patching SELinux Static Symbols cho ReSukiSU / selinux_hide ==="
+          if [ -f security/selinux/selinuxfs.c ]; then
+            sed -i 's/static const struct file_operations sel_handle_status_ops/const struct file_operations sel_handle_status_ops/g' security/selinux/selinuxfs.c
+            sed -i 's/static DEFINE_MUTEX(sel_mutex);/DEFINE_MUTEX(sel_mutex);/g' security/selinux/selinuxfs.c
+            sed -i 's/static ssize_t (\* const write_op\[\])/ssize_t (* const write_op[])/g' security/selinux/selinuxfs.c
+          fi
+          if [ -f security/selinux/ss/services.c ]; then
+            sed -i 's/static void security_dump_masked_av(/void security_dump_masked_av(/g' security/selinux/ss/services.c
+            sed -i 's/static void context_struct_compute_av(/void context_struct_compute_av(/g' security/selinux/ss/services.c
+          fi
 
       - name: Extract KSU Metadata & Manager Compatibility
         id: ksu_meta
@@ -258,12 +272,12 @@ jobs:
             scripts/config --file out/.config --enable CONFIG_HAVE_KPROBES
             scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
             
-            # Bắt buộc để selinux_hide tìm được symbol hook SELinux (policydb / lsm_hook)
+            # CONFIG_DEBUG_KERNEL là điều kiện phụ thuộc bắt buộc để Kbuild không xóa CONFIG_KALLSYMS_ALL khi chạy olddefconfig
+            scripts/config --file out/.config --enable CONFIG_DEBUG_KERNEL
             scripts/config --file out/.config --enable CONFIG_KALLSYMS
             scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
             scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX
           fi
-
 
           if [ "${{ inputs.ENABLE_KERNELSU }}" = "true" ] && [ "${{ inputs.enable_susfs }}" = "true" ]; then
             echo "=== Kích hoạt toàn bộ các cờ bảo vệ SuSFS (Anti-Detect Bank/VNeID) ==="
@@ -288,9 +302,7 @@ jobs:
               scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
             done
 
-            # Tắt log debug của SuSFS hoặc bật tùy nhu cầu (nên bật nếu dùng module susfs4ksu yêu cầu log, hoặc tắt để tránh lộ dmesg)
             scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_ENABLE_LOG || echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> out/.config
-            # Tắt SUS_SU nếu dùng cơ chế hook tiêu chuẩn của KSU để tránh xung đột tiến trình init
             scripts/config --file out/.config --disable CONFIG_KSU_SUSFS_SUS_SU || true
           fi
 
@@ -309,8 +321,8 @@ jobs:
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
             olddefconfig
 
-          echo "=== Kiểm tra các cờ KSU & SuSFS thực tế sau khi olddefconfig ==="
-          grep -E "CONFIG_KSU" out/.config || true
+          echo "=== Kiểm tra các cờ KSU, KALLSYMS & SuSFS thực tế sau khi olddefconfig ==="
+          grep -E "CONFIG_KSU|CONFIG_KALLSYMS" out/.config || true
 
           make -j$(nproc) \
             O=out \
