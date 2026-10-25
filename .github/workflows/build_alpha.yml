@@ -9,7 +9,7 @@ on:
       kernel_branch:
         description: "Branch to build"
         required: true
-        default: "staging-bpf"
+        default: "test-fie"
 
 jobs:
   build:
@@ -46,6 +46,8 @@ jobs:
             curl \
             flex \
             git \
+            dwarves \
+            libelf-dev \
             libssl-dev \
             lld \
             python3 \
