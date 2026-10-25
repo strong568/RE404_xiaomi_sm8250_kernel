@@ -28,6 +28,7 @@ on:
           - "RKSU (rsuntk)"
           - "backslashxx-KernelSU"
           - "KOWX712-KernelSU"
+          - "MidoriSU"
         default: "ReSukiSU"
       enable_susfs:
         description: "Cấu hình CONFIG_KSU_SUSFS (Bật đầy đủ cờ ẩn Root)"
@@ -130,6 +131,9 @@ jobs:
             "KOWX712-KernelSU")
               curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
               ;;
+            "MidoriSU")
+              curl -LSs "https://raw.githubusercontent.com/midori01/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
+              ;;
             *)
               if [ "${{ inputs.enable_susfs }}" = "true" ]; then
                 curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy_susfs/kernel/setup.sh" | bash -s -- legacy_susfs
@@ -201,8 +205,6 @@ jobs:
               sed -i 's/$(error.*You lost.*)/$(warning hook check bypassed)/g' "$KSU_DIR/Kbuild"
             fi
           fi
-
-
 
       - name: Extract KSU Metadata & Manager Compatibility
         id: ksu_meta
@@ -291,6 +293,11 @@ jobs:
                 APP_NAME="KernelSU-Next / KOW Manager"
                 APP_REPO="https://github.com/KOWX712/KernelSU/releases"
                 APP_NOTE="Hỗ trợ multi-manager hoặc APK build của KOWX."
+                ;;
+              "MidoriSU")
+                APP_NAME="MidoriSU Manager"
+                APP_REPO="https://github.com/midori01/KernelSU/releases"
+                APP_NOTE="Sử dụng Manager tương thích từ kho phát hành của MidoriSU."
                 ;;
               *)
                 APP_NAME="KernelSU-Next Manager"
