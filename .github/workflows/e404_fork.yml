@@ -117,6 +117,7 @@ jobs:
               [ -d KernelSU ] && curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy/kernel/setup.sh" | bash -s -- --cleanup || true
               curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy/kernel/setup.sh" | bash -s -- legacy
               ;;
+              
           esac
 
       - name: Extract KSU Metadata & Manager Compatibility
@@ -189,8 +190,8 @@ jobs:
                 ;;
               "backslashxx-KernelSU")
                 APP_NAME="Official KernelSU Manager (tiann)"
-                APP_REPO="https://github.com/tiann/KernelSU/releases"
-                APP_NOTE="Fork backslashxx giữ nguyên official testkey. Sử dụng trực tiếp APK chính thức từ https://github.com/tiann/KernelSU/releases (khuyến nghị v0.9.5 hoặc bản mới nhất)."
+                APP_REPO="https://github.com/backslashxx/KernelSU/releases"
+                APP_NOTE="Fork backslashxx giữ nguyên official testkey. Sử dụng trực tiếp APK chính thức từ https://github.com/backslashxx/KernelSU/releases (khuyến nghị bản mới nhất)."
                 ;;
               "KOWX712-KernelSU")
                 APP_NAME="KernelSU-Next / KOW Manager"
@@ -220,19 +221,60 @@ jobs:
           export SUBARCH=arm64
           make O=out vendor/munch_defconfig
 
+          if [ "${{ inputs.ENABLE_KERNELSU }}" = "true" ]; then
+            echo "=== Kích hoạt KernelSU Core ==="
+            scripts/config --file out/.config --enable CONFIG_KSU
+            scripts/config --file out/.config --enable CONFIG_KPROBES
+            scripts/config --file out/.config --enable CONFIG_HAVE_KPROBES
+            scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
+          fi
+
           if [ "${{ inputs.ENABLE_KERNELSU }}" = "true" ] && [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            echo "=== Kích hoạt toàn bộ các cờ bảo vệ SuSFS ==="
+            echo "=== Kích hoạt toàn bộ các cờ bảo vệ SuSFS (Anti-Detect Bank/VNeID) ==="
             for cfg in \
               CONFIG_KSU_SUSFS \
               CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
+              CONFIG_KSU_SUSFS_SUS_PATH \
               CONFIG_KSU_SUSFS_AUTO_ADD_SUS_PATH \
-              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_MOUNT \
-              CONFIG_KSU_SUSFS_SUS_KSTAT \
               CONFIG_KSU_SUSFS_SUS_MOUNT \
-              CONFIG_KSU_SUSFS_SPOOF_UNAME; do
+              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_MOUNT \
+              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+              CONFIG_KSU_SUSFS_TRY_UMOUNT \
+              CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
+              CONFIG_KSU_SUSFS_SUS_KSTAT \
+              CONFIG_KSU_SUSFS_SUS_MAP \
+              CONFIG_KSU_SUSFS_SPOOF_UNAME \
+              CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+              CONFIG_KSU_SUSFS_SPOOF_PROC_CMDLINE \
+              CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+              CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+              CONFIG_KSU_SUSFS_SUS_OVERLAYFS; do
               scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
             done
+
+            # Tắt log debug của SuSFS hoặc bật tùy nhu cầu (nên bật nếu dùng module susfs4ksu yêu cầu log, hoặc tắt để tránh lộ dmesg)
+            scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_ENABLE_LOG || echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> out/.config
+            # Tắt SUS_SU nếu dùng cơ chế hook tiêu chuẩn của KSU để tránh xung đột tiến trình init
+            scripts/config --file out/.config --disable CONFIG_KSU_SUSFS_SUS_SU || true
           fi
+
+          # Đồng bộ lại file .config để Kbuild xác nhận các cờ vừa thêm
+          make O=out \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            LLVM_IAS=1 \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            olddefconfig
+
+          echo "=== Kiểm tra các cờ KSU & SuSFS thực tế sau khi olddefconfig ==="
+          grep -E "CONFIG_KSU" out/.config || true
 
           make -j$(nproc) \
             O=out \
@@ -247,6 +289,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+
 
       - name: Clone AnyKernel3
         run: |
