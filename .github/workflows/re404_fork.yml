@@ -68,6 +68,7 @@ jobs:
             curl \
             flex \
             git \
+            jq \
             libssl-dev \
             lld \
             llvm \
@@ -117,7 +118,7 @@ jobs:
               fi
               ;;
             "SukiSU-Ultra")
-              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s main
+              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s susfs-main
               ;;
             "XXKSU-SUSFS")
               curl -LSs "https://raw.githubusercontent.com/zenwav/KernelSU-SUSFS/refs/heads/master/kernel/setup.sh" | bash -s master
@@ -136,35 +137,128 @@ jobs:
               ;;
             *)
               if [ "${{ inputs.enable_susfs }}" = "true" ]; then
-                curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy_susfs/kernel/setup.sh" | bash -s -- legacy_susfs
+                curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/next-susfs/kernel/setup.sh" | bash -s next-susfs
               else
-                curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/legacy/kernel/setup.sh" | bash -s -- legacy
+                curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/next/kernel/setup.sh" | bash -s next
               fi
               ;;
           esac
 
-          # Tải mã nguồn SuSFS chuẩn bằng git clone (tránh lỗi curl trả về trang web HTML)
+          # Tích hợp đầy đủ SuSFS (Bao gồm cả Kernel VFS Patch + Files)
           if [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            echo "=== Đồng bộ tệp nhân SuSFS 4.19 vào kernel core ==="
+            echo "=== Đồng bộ và Patch mã nguồn SuSFS 4.19 vào kernel core ==="
             rm -rf /tmp/susfs4ksu
             git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu || \
-            git clone --depth=1 -b kernel-4.19 https://github.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu || true
+            git clone --depth=1 -b kernel-4.19 https://github.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 
             if [ -d "/tmp/susfs4ksu" ]; then
-              mkdir -p fs include/linux
-              cp -f /tmp/susfs4ksu/KernelPatches/fs/susfs.c fs/ 2>/dev/null || true
-              cp -f /tmp/susfs4ksu/KernelPatches/include/linux/susfs.h include/linux/ 2>/dev/null || true
-              cp -f /tmp/susfs4ksu/KernelPatches/include/linux/susfs_def.h include/linux/ 2>/dev/null || true
-              
-              # Nếu tệp include/linux/susfs_def.h vẫn chưa có từ repo gốc, tạo tệp header fallback tương thích
-              if [ ! -f include/linux/susfs_def.h ] && [ -f include/linux/susfs.h ]; then
-                cp -f include/linux/susfs.h include/linux/susfs_def.h
+              # 1. Copy các tệp thực thi và header của SuSFS
+              cp -rf /tmp/susfs4ksu/kernel_patches/fs/* fs/ 2>/dev/null || cp -rf /tmp/susfs4ksu/KernelPatches/fs/* fs/ 2>/dev/null || true
+              cp -rf /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/ 2>/dev/null || cp -rf /tmp/susfs4ksu/KernelPatches/include/linux/* include/linux/ 2>/dev/null || true
+
+              # 2. Áp dụng file Patch VFS vào nhân 4.19 (Bắt buộc để SuSFS hoạt động thực sự)
+              SUSFS_PATCH=$(find /tmp/susfs4ksu -name "50_add_susfs_in_kernel*.patch" | head -n 1)
+              if [ -n "$SUSFS_PATCH" ]; then
+                echo "Đang áp dụng patch nhân: $SUSFS_PATCH"
+                patch -p1 -F 3 --no-backup-if-mismatch < "$SUSFS_PATCH" || true
+              fi
+
+              # 3. Đảm bảo fs/Kconfig có khai báo CONFIG_KSU_SUSFS để không bị xóa khi chạy olddefconfig
+              if ! grep -q "config KSU_SUSFS" fs/Kconfig 2>/dev/null; then
+                cat << 'EOF' >> fs/Kconfig
+
+config KSU_SUSFS
+	bool "KernelSU - SUSFS"
+	depends on KSU
+	default y
+	help
+	  Patch and Enable SUSFS to kernel with KernelSU.
+
+config KSU_SUSFS_HAS_MAGIC_MOUNT
+	bool "Say yes if the current KernelSU repo has magic mount implemented"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SUS_PATH
+	bool "Enable to hide suspicious path"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SUS_MOUNT
+	bool "Enable to hide suspicious mounts"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+	bool "Enable to hide KSU's default mounts automatically"
+	depends on KSU_SUSFS_SUS_MOUNT
+	default y
+
+config KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+	bool "Enable to hide suspicious bind mounts automatically"
+	depends on KSU_SUSFS_SUS_MOUNT
+	default y
+
+config KSU_SUSFS_SUS_KSTAT
+	bool "Enable to spoof suspicious kstat"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SUS_OVERLAYFS
+	bool "Enable to automatically spoof kstat and kstatfs for overlayed files/directories"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_TRY_UMOUNT
+	bool "Enable to use ksu's try_umount"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
+	bool "Enable to add bind mounts to ksu's try_umount automatically"
+	depends on KSU_SUSFS_TRY_UMOUNT
+	default y
+
+config KSU_SUSFS_SPOOF_UNAME
+	bool "Enable to spoof uname"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_ENABLE_LOG
+	bool "Enable logging susfs log to kernel"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+	bool "Enable to automatically hide ksu and susfs symbols from /proc/kallsyms"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+	bool "Enable to spoof /proc/bootconfig or /proc/cmdline"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_OPEN_REDIRECT
+	bool "Enable to redirect a path to be opened with another path"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SUS_SU
+	bool "Enable SUS-SU in runtime temporarily"
+	depends on KSU_SUSFS && KPROBES && HAVE_KPROBES && KPROBE_EVENTS
+	default n
+
+config KSU_SUSFS_SUS_MAP
+	bool "Enable to hide some mmapped real file from different proc maps interfaces"
+	depends on KSU_SUSFS
+	default y
+EOF
               fi
 
               if ! grep -q "CONFIG_KSU_SUSFS" fs/Makefile 2>/dev/null; then
                 echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
               fi
-              echo "Đã sao chép susfs.c, susfs.h, susfs_def.h thành công!"
             fi
           fi
 
@@ -185,30 +279,12 @@ jobs:
             sed -i 's/static void context_struct_compute_av(/void context_struct_compute_av(/g' security/selinux/ss/services.c
           fi
 
-          echo "=== Vô hiệu hóa toàn bộ cơ chế chặn build của KSU/ReSukiSU ==="
-          KSU_DIR=""
-          for d in KernelSU KernelSU-Next drivers/kernelsu; do
-            if [ -d "$d" ]; then
-              KSU_DIR="$d"
-              break
-            fi
-          done
-
-          if [ -n "$KSU_DIR" ]; then
-            # Xóa sạch các file kiểm tra hook
-            find "$KSU_DIR" -type f -name "*_check.mk" -exec truncate -s 0 {} +
-            find "$KSU_DIR" -type f -name "check_*.mk" -exec truncate -s 0 {} +
-
-            # Vô hiệu hóa lệnh chặn $(error ...) trong Kbuild của KSU
-            if [ -f "$KSU_DIR/Kbuild" ]; then
-              sed -i 's/$(error.*You should integrate susfs in your kernel.*)/$(warning susfs check bypassed)/g' "$KSU_DIR/Kbuild"
-              sed -i 's/$(error.*You lost.*)/$(warning hook check bypassed)/g' "$KSU_DIR/Kbuild"
-            fi
-          fi
 
       - name: Extract KSU Metadata & Manager Compatibility
         id: ksu_meta
         working-directory: ${{ steps.kernel.outputs.kernel-folder }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           KSU_VER=""
           KSU_TAG=""
@@ -257,54 +333,117 @@ jobs:
 
           # Xác định thông tin & link tải Manager tương thích chuẩn
           KSU_CHOICE="${{ inputs.WHICH_KSU }}"
+          GH_REPO_SLUG=""
+          FALLBACK_REPO_SLUG=""
+          PINNED_TAG=""
+
           if [ "${{ steps.workspace.outputs.kernelsu }}" = "Yes" ]; then
             case "$KSU_CHOICE" in
               "ReSukiSU")
                 APP_NAME="ReSukiSU Manager"
                 APP_REPO="https://github.com/ReSukiSU/ReSukiSU/releases"
                 APP_NOTE="Ghim tại v4.2.0-rc3 để tương thích hoàn toàn với SuSFS. Khuyến nghị cài APK Manager v4.2.0-rc3 tương ứng."
+                GH_REPO_SLUG="ReSukiSU/ReSukiSU"
+                PINNED_TAG="v4.2.0-rc3"
                 ;;
               "BakaSU")
                 APP_NAME="BakaSU / ReSukiSU Manager"
                 APP_REPO="https://github.com/Baka-SU/BakaSU/releases"
                 APP_NOTE="Sử dụng BakaSU Manager (bản v4.2.0-rc3 nếu bật SuSFS để đồng bộ driver)."
+                GH_REPO_SLUG="Baka-SU/BakaSU"
+                FALLBACK_REPO_SLUG="ReSukiSU/ReSukiSU"
+                [ "${{ inputs.enable_susfs }}" = "true" ] && PINNED_TAG="v4.2.0-rc3"
                 ;;
               "SukiSU-Ultra")
                 APP_NAME="SukiSU Manager"
                 APP_REPO="https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases"
                 APP_NOTE="Bắt buộc cài Manager của SukiSU để khớp driver hook và signature."
+                GH_REPO_SLUG="SukiSU-Ultra/SukiSU-Ultra"
                 ;;
               "XXKSU-SUSFS")
                 APP_NAME="KernelSU Manager (SuSFS) / KSU-Next"
                 APP_REPO="https://github.com/zenwav/KernelSU-SUSFS/releases"
                 APP_NOTE="Dùng Manager từ kho phát hành zenwav hoặc Next Manager hỗ trợ SuSFS."
+                GH_REPO_SLUG="zenwav/KernelSU-SUSFS"
+                FALLBACK_REPO_SLUG="rifsxd/KernelSU-Next"
                 ;;
               "RKSU (rsuntk)")
                 APP_NAME="RKSU Manager"
                 APP_REPO="https://github.com/rsuntk/KernelSU/releases"
                 APP_NOTE="Tương thích phiên bản legacy v3.2.2-10."
+                GH_REPO_SLUG="rsuntk/KernelSU"
+                PINNED_TAG="v3.2.2-10-legacy"
                 ;;
               "backslashxx-KernelSU")
                 APP_NAME="Official KernelSU Manager (tiann)"
                 APP_REPO="https://github.com/backslashxx/KernelSU/releases"
                 APP_NOTE="Fork backslashxx giữ nguyên official testkey. Sử dụng trực tiếp APK chính thức từ https://github.com/backslashxx/KernelSU/releases (khuyến nghị bản mới nhất)."
+                GH_REPO_SLUG="backslashxx/KernelSU"
+                FALLBACK_REPO_SLUG="tiann/KernelSU"
                 ;;
               "KOWX712-KernelSU")
                 APP_NAME="KernelSU-Next / KOW Manager"
                 APP_REPO="https://github.com/KOWX712/KernelSU/releases"
                 APP_NOTE="Hỗ trợ multi-manager hoặc APK build của KOWX."
+                GH_REPO_SLUG="KOWX712/KernelSU"
+                FALLBACK_REPO_SLUG="rifsxd/KernelSU-Next"
                 ;;
               "MidoriSU")
                 APP_NAME="MidoriSU Manager"
                 APP_REPO="https://github.com/midori01/KernelSU/releases"
                 APP_NOTE="Sử dụng Manager tương thích từ kho phát hành của MidoriSU."
+                GH_REPO_SLUG="midori01/KernelSU"
                 ;;
               *)
                 APP_NAME="KernelSU-Next Manager"
                 APP_REPO="https://github.com/rifsxd/KernelSU-Next/releases"
                 APP_NOTE="Dùng KernelSU-Next Manager (nhánh Legacy/v1.x)."
+                GH_REPO_SLUG="rifsxd/KernelSU-Next"
+                FALLBACK_REPO_SLUG="KernelSU-Next/KernelSU-Next"
                 ;;
             esac
+
+            # Hàm tìm và tải APK từ GitHub Releases
+            fetch_apk_url() {
+              local repo="$1"
+              local tag="$2"
+              local url=""
+              local auth_header=()
+              [ -n "$GH_TOKEN" ] && auth_header=(-H "Authorization: Bearer $GH_TOKEN")
+
+              if [ -n "$tag" ]; then
+                url=$(curl -sL "${auth_header[@]}" "https://api.github.com/repos/${repo}/releases/tags/${tag}" \
+                  | jq -r '.assets[]? | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
+              fi
+              if [ -z "$url" ] || [ "$url" = "null" ]; then
+                url=$(curl -sL "${auth_header[@]}" "https://api.github.com/repos/${repo}/releases" \
+                  | jq -r '.[].assets[]? | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)
+              fi
+              echo "$url"
+            }
+
+            APK_URL=$(fetch_apk_url "$GH_REPO_SLUG" "$PINNED_TAG")
+            if [ -z "$APK_URL" ] && [ -n "$FALLBACK_REPO_SLUG" ]; then
+              APK_URL=$(fetch_apk_url "$FALLBACK_REPO_SLUG" "$PINNED_TAG")
+            fi
+
+            if [ -n "$APK_URL" ] && [ "$APK_URL" != "null" ]; then
+              ORIG_APK_NAME=$(basename "$APK_URL")
+              SAFE_KSU=$(echo "$KSU_CHOICE" | tr -d ' ()' | tr '/' '-')
+              # Đặt tên file APK có nhãn biến thể KSU ở đầu (nếu tên gốc chưa có)
+              if [[ "${ORIG_APK_NAME,,}" == *"${SAFE_KSU,,}"* ]]; then
+                FINAL_APK_NAME="$ORIG_APK_NAME"
+              else
+                FINAL_APK_NAME="${SAFE_KSU}_${ORIG_APK_NAME#KernelSU_}"
+              fi
+              echo "Đang tải Manager APK: $APK_URL -> $GITHUB_WORKSPACE/$FINAL_APK_NAME"
+              curl -LSs "$APK_URL" -o "$GITHUB_WORKSPACE/$FINAL_APK_NAME" || true
+              if [ -s "$GITHUB_WORKSPACE/$FINAL_APK_NAME" ]; then
+                echo "APK_PATH=${FINAL_APK_NAME}" >> "$GITHUB_ENV"
+              fi
+            else
+              echo "Không tìm thấy file APK trực tiếp từ API cho ${KSU_CHOICE}."
+            fi
           else
             APP_NAME="Không sử dụng (No Root)"
             APP_REPO="N/A"
@@ -321,20 +460,16 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
 
-          # Gỡ điều kiện phụ thuộc DEBUG_KERNEL khỏi KALLSYMS_ALL trong init/Kconfig
-          # Giúp bật CONFIG_KALLSYMS_ALL=y mà không làm kích hoạt CONFIG_SCHED_DEBUG gây lỗi kernel/sched/debug.o
           sed -i 's/depends on DEBUG_KERNEL && KALLSYMS/depends on KALLSYMS/g' init/Kconfig
 
           make O=out vendor/munch_defconfig
 
           if [ "${{ inputs.ENABLE_KERNELSU }}" = "true" ]; then
-            echo "=== Kích hoạt KernelSU Core & Hỗ trợ SELinux Hide (selinux_hide) ==="
+            echo "=== Kích hoạt KernelSU Core ==="
             scripts/config --file out/.config --enable CONFIG_KSU
             scripts/config --file out/.config --enable CONFIG_KPROBES
             scripts/config --file out/.config --enable CONFIG_HAVE_KPROBES
             scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
-            
-            # Bật KALLSYMS_ALL cho selinux_hide nhưng giữ tắt SCHED_DEBUG để tránh lỗi biên dịch debug.c
             scripts/config --file out/.config --enable CONFIG_KALLSYMS
             scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
             scripts/config --file out/.config --enable CONFIG_SECURITY_SELINUX
@@ -342,7 +477,7 @@ jobs:
           fi
 
           if [ "${{ inputs.ENABLE_KERNELSU }}" = "true" ] && [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            echo "=== Kích hoạt toàn bộ các cờ bảo vệ SuSFS (Anti-Detect Bank/VNeID) ==="
+            echo "=== Kích hoạt cấu hình SuSFS tối ưu vượt Bank/VCB ==="
             for cfg in \
               CONFIG_KSU_SUSFS \
               CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
@@ -351,6 +486,7 @@ jobs:
               CONFIG_KSU_SUSFS_SUS_MOUNT \
               CONFIG_KSU_SUSFS_AUTO_ADD_SUS_MOUNT \
               CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
               CONFIG_KSU_SUSFS_TRY_UMOUNT \
               CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
               CONFIG_KSU_SUSFS_SUS_KSTAT \
@@ -359,16 +495,20 @@ jobs:
               CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
               CONFIG_KSU_SUSFS_SPOOF_PROC_CMDLINE \
               CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-              CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-              CONFIG_KSU_SUSFS_SUS_OVERLAYFS; do
-              scripts/config --file out/.config --enable "$cfg" || echo "${cfg}=y" >> out/.config
+              CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS; do
+              scripts/config --file out/.config --enable "$cfg"
             done
 
-            scripts/config --file out/.config --enable CONFIG_KSU_SUSFS_ENABLE_LOG || echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> out/.config
-            scripts/config --file out/.config --disable CONFIG_KSU_SUSFS_SUS_SU || true
+            # TẮT các cờ dễ gây xung đột hoặc lộ dấu vết khi VCB quét sâu
+            scripts/config --file out/.config --disable CONFIG_KSU_SUSFS_SUS_OVERLAYFS
+            scripts/config --file out/.config --disable CONFIG_KSU_SUSFS_ENABLE_LOG
+            scripts/config --file out/.config --disable CONFIG_KSU_SUSFS_SUS_SU
           fi
 
-          # Đồng bộ lại file .config để Kbuild xác nhận các cờ vừa thêm
+          # Ẩn hậu tố tên kernel custom (-dirty / tên branch lạ) để tránh VCB bắt uname
+          scripts/config --file out/.config --set-str CONFIG_LOCALVERSION "-perf"
+          scripts/config --file out/.config --disable CONFIG_LOCALVERSION_AUTO
+
           make O=out \
             CC=clang \
             LD=ld.lld \
@@ -383,8 +523,8 @@ jobs:
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
             olddefconfig
 
-          echo "=== Kiểm tra các cờ KSU, KALLSYMS & SCHED_DEBUG thực tế sau khi olddefconfig ==="
-          grep -E "CONFIG_KSU|CONFIG_KALLSYMS|CONFIG_SCHED_DEBUG" out/.config || true
+          echo "=== Kiểm tra các cờ CONFIG_KSU_SUSFS sau khi olddefconfig ==="
+          grep "CONFIG_KSU" out/.config || true
 
           make -j$(nproc) \
             O=out \
@@ -399,6 +539,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+
 
       - name: Clone AnyKernel3
         run: |
@@ -434,7 +575,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-${{ inputs.WHICH_KSU }}
-          path: ${{ env.ZIP_PATH }}
+          path: |
+            ${{ env.ZIP_PATH }}
+            ${{ env.APK_PATH }}
 
       - name: Release Kernel
         uses: softprops/action-gh-release@v2
@@ -463,5 +606,6 @@ jobs:
             - **Ghi chú tương thích:** ${{ steps.ksu_meta.outputs.app_note }}
           files: |
             ${{ env.ZIP_PATH }}
+            ${{ env.APK_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
